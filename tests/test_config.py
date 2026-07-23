@@ -105,6 +105,32 @@ class ConfigTests(unittest.TestCase):
             )
         self.assertEqual(recipients, ("friend@example.com",))
 
+    def test_supports_multiple_recipients_in_one_secret(self) -> None:
+        website = WebsiteConfig(
+            id="cufe-master",
+            name="中央财经大学硕士招生",
+            url="https://gs.cufe.edu.cn/zsgz/sszs_sz_.htm",
+            parser="cufe_master",
+            recipient_env="CUFE_RECIPIENTS",
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "CUFE_RECIPIENTS": (
+                    "owner@qq.com, second@outlook.com"
+                )
+            },
+            clear=False,
+        ):
+            recipients = resolve_website_recipients(
+                website,
+                ("owner@qq.com",),
+            )
+        self.assertEqual(
+            recipients,
+            ("owner@qq.com", "second@outlook.com"),
+        )
+
     def test_website_without_override_uses_default_recipient(self) -> None:
         website = WebsiteConfig(
             id="cufe-master",

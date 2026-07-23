@@ -10,6 +10,7 @@ GitHub 的标准云端运行器对公开仓库免费。私有仓库也有免费�
 
 - 邮箱地址保存在 GitHub Secret `SMTP_USERNAME`
 - SMTP 授权码保存在 GitHub Secret `SMTP_PASSWORD`
+- 中财收件地址保存在 GitHub Secret `CUFE_RECIPIENTS`
 - 朋友的收件地址保存在 GitHub Secret `BJTU_RECIPIENT`
 - 仓库中保存的 SQLite 只包含学校公开公告标题、链接和通知状态
 
@@ -77,7 +78,7 @@ Settings
 → New repository secret
 ```
 
-添加三个 Secret。
+添加四个 Secret。
 
 ### Secret 1
 
@@ -116,6 +117,20 @@ Secret 保存后不能再次查看明文，这是正常现象。需要修改时�
 名称：
 
 ```text
+CUFE_RECIPIENTS
+```
+
+值填写接收中央财经大学公告的邮箱，用英文逗号分隔：
+
+```text
+你的QQ邮箱@qq.com,另一个邮箱@outlook.com
+```
+
+### Secret 4
+
+名称：
+
+```text
 BJTU_RECIPIENT
 ```
 
@@ -127,7 +142,7 @@ BJTU_RECIPIENT
 
 程序会按学校分发：
 
-- 中央财经大学公告发送到 `SMTP_USERNAME`
+- 中央财经大学公告发送到 `CUFE_RECIPIENTS`
 - 北京交通大学公告发送到 `BJTU_RECIPIENT`
 
 如果北交公告需要同时发送给多人，可以在一个 Secret 中用英文逗号分隔：
@@ -172,6 +187,7 @@ Read and write permissions
 4. 在“测试邮件发给谁”中选择：
 
    - `owner`：发送给仓库主人
+   - `cufe-group`：发送给中财的全部收件邮箱
    - `bjtu-friend`：发送给接收北交公告的朋友
 
 5. 点击绿色的 `Run workflow`

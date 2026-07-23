@@ -13,7 +13,7 @@
 - `.github/workflows/admission-radar.yml` 定时工作流
 - `config.cloud.json` 云端配置
 - GitHub Secrets 邮箱授权码保护
-- 中财公告发给仓库主人、北交公告发给指定朋友的独立分发
+- 中财公告发给 QQ + Outlook、北交公告发给指定朋友的独立分发
 - 云端 SQLite 状态持久化
 - 每 30 天一次的轻量心跳，防止公开仓库因长期无活动而停用计划任务
 - 手动“只测试邮件”入口

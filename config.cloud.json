@@ -27,7 +27,8 @@
       "id": "cufe-master",
       "name": "中央财经大学硕士招生（双证）",
       "url": "https://gs.cufe.edu.cn/zsgz/sszs_sz_.htm",
-      "parser": "cufe_master"
+      "parser": "cufe_master",
+      "recipient_env": "CUFE_RECIPIENTS"
     },
     {
       "id": "bjtu-master",
