@@ -7,7 +7,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from admission_radar.config import ConfigError, load_config
+from admission_radar.config import (
+    ConfigError,
+    WebsiteConfig,
+    load_config,
+    resolve_website_recipients,
+)
 
 
 def cloud_config() -> dict:
@@ -80,6 +85,38 @@ class ConfigTests(unittest.TestCase):
             ):
                 with self.assertRaises(ConfigError):
                     load_config(config_path)
+
+    def test_routes_each_website_to_its_own_recipient(self) -> None:
+        website = WebsiteConfig(
+            id="bjtu-master",
+            name="北京交通大学硕士招生",
+            url="https://yzb.bjtu.edu.cn/sszs/index.htm",
+            parser="bjtu_master",
+            recipient_env="BJTU_RECIPIENT",
+        )
+        with patch.dict(
+            os.environ,
+            {"BJTU_RECIPIENT": "friend@example.com"},
+            clear=False,
+        ):
+            recipients = resolve_website_recipients(
+                website,
+                ("owner@example.com",),
+            )
+        self.assertEqual(recipients, ("friend@example.com",))
+
+    def test_website_without_override_uses_default_recipient(self) -> None:
+        website = WebsiteConfig(
+            id="cufe-master",
+            name="中央财经大学硕士招生",
+            url="https://gs.cufe.edu.cn/zsgz/sszs_sz_.htm",
+            parser="cufe_master",
+        )
+        recipients = resolve_website_recipients(
+            website,
+            ("owner@example.com",),
+        )
+        self.assertEqual(recipients, ("owner@example.com",))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from admission_radar.fetcher import FetchError, parse_cufe_master
+from admission_radar.fetcher import (
+    FetchError,
+    parse_bjtu_master,
+    parse_cufe_master,
+)
 
 
 PAGE_URL = "https://gs.cufe.edu.cn/zsgz/sszs_sz_.htm"
@@ -60,6 +64,45 @@ class CufeParserTests(unittest.TestCase):
     def test_raises_when_structure_no_longer_matches(self) -> None:
         with self.assertRaises(FetchError):
             parse_cufe_master(b"<html><body>changed</body></html>", PAGE_URL)
+
+
+class BjtuParserTests(unittest.TestCase):
+    def test_extracts_bjtu_notice(self) -> None:
+        page_url = "https://yzb.bjtu.edu.cn/sszs/index.htm"
+        html = """
+        <section class="sub_right sub_right_list marginBot article">
+          <ul class="list01">
+            <li>
+              <a href="5e52192bdb8c433cae997db0f164988c.htm">
+                <div class="timeListPartner">
+                  <p class="timeListPartnerTitle">
+                    关于北京交通大学2027年部分硕士研究生招生专业调整公告
+                  </p>
+                </div>
+                <div class="subListTime">2026-06-04</div>
+              </a>
+            </li>
+          </ul>
+        </section>
+        """.encode("utf-8")
+
+        notices = parse_bjtu_master(html, page_url)
+
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(
+            notices[0].url,
+            "https://yzb.bjtu.edu.cn/sszs/"
+            "5e52192bdb8c433cae997db0f164988c.htm",
+        )
+        self.assertEqual(notices[0].published_date, "2026-06-04")
+        self.assertIn("北京交通大学2027年", notices[0].title)
+
+    def test_bjtu_structure_change_fails_safely(self) -> None:
+        with self.assertRaises(FetchError):
+            parse_bjtu_master(
+                b"<html><body>changed</body></html>",
+                "https://yzb.bjtu.edu.cn/sszs/index.htm",
+            )
 
 
 if __name__ == "__main__":

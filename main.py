@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
-from admission_radar.config import ConfigError, load_config
+from admission_radar.config import (
+    ConfigError,
+    load_config,
+    resolve_website_recipients,
+)
 from admission_radar.database import RadarDatabase
 from admission_radar.fetcher import FetchError, build_session, fetch_notices
 from admission_radar.logging_setup import configure_logging
@@ -40,6 +45,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="只发送一封测试邮件，不抓取网页、不修改数据库",
     )
+    parser.add_argument(
+        "--test-email-website",
+        help="测试指定网站的分发收件人，例如 bjtu-master",
+    )
     return parser.parse_args()
 
 
@@ -59,13 +68,55 @@ def run() -> int:
         if not config.email.enabled:
             logger.error("邮件未启用；请先把 config.json 中 email.enabled 改为 true。")
             return 2
+        test_email_config = config.email
+        if args.test_email_website:
+            target_website = next(
+                (
+                    website
+                    for website in config.websites
+                    if website.id == args.test_email_website
+                ),
+                None,
+            )
+            if target_website is None:
+                logger.error(
+                    "找不到测试网站：%s",
+                    args.test_email_website,
+                )
+                return 2
+            try:
+                test_recipients = resolve_website_recipients(
+                    target_website,
+                    config.email.to_addresses,
+                )
+            except ConfigError as exc:
+                logger.error("收件人配置错误：%s", exc)
+                return 2
+            test_email_config = replace(
+                config.email,
+                to_addresses=test_recipients,
+            )
         try:
-            send_test_email(config.email)
+            send_test_email(test_email_config)
         except EmailError as exc:
             logger.error("测试邮件发送失败：%s", exc)
             return 1
         logger.info("测试邮件发送成功，请检查收件箱和垃圾邮件文件夹。")
         return 0
+
+    recipients_by_website: dict[str, tuple[str, ...]] = {}
+    if config.email.enabled:
+        try:
+            recipients_by_website = {
+                website.id: resolve_website_recipients(
+                    website,
+                    config.email.to_addresses,
+                )
+                for website in config.websites
+            }
+        except ConfigError as exc:
+            logger.error("收件人配置错误：%s", exc)
+            return 2
 
     had_error = False
     session = build_session(config.request)
@@ -123,7 +174,11 @@ def run() -> int:
                     continue
 
                 try:
-                    send_notices(config.email, website.name, pending)
+                    website_email = replace(
+                        config.email,
+                        to_addresses=recipients_by_website[website.id],
+                    )
+                    send_notices(website_email, website.name, pending)
                     database.mark_notified([notice.id for notice in pending])
                     logger.info("已发送邮件，包含 %d 条新公告。", len(pending))
                 except EmailError as exc:

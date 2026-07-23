@@ -28,6 +28,13 @@
       "name": "中央财经大学硕士招生（双证）",
       "url": "https://gs.cufe.edu.cn/zsgz/sszs_sz_.htm",
       "parser": "cufe_master"
+    },
+    {
+      "id": "bjtu-master",
+      "name": "北京交通大学硕士招生",
+      "url": "https://yzb.bjtu.edu.cn/sszs/index.htm",
+      "parser": "bjtu_master",
+      "recipient_env": "BJTU_RECIPIENT"
     }
   ]
 }

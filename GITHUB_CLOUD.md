@@ -10,6 +10,7 @@ GitHub 的标准云端运行器对公开仓库免费。私有仓库也有免费�
 
 - 邮箱地址保存在 GitHub Secret `SMTP_USERNAME`
 - SMTP 授权码保存在 GitHub Secret `SMTP_PASSWORD`
+- 朋友的收件地址保存在 GitHub Secret `BJTU_RECIPIENT`
 - 仓库中保存的 SQLite 只包含学校公开公告标题、链接和通知状态
 
 因此，为了确保接近零成本，建议使用公开仓库。
@@ -76,7 +77,7 @@ Settings
 → New repository secret
 ```
 
-添加两个 Secret。
+添加三个 Secret。
 
 ### Secret 1
 
@@ -109,6 +110,31 @@ SMTP_PASSWORD
 这里仍然是 SMTP 授权码，不是 QQ 登录密码。
 
 Secret 保存后不能再次查看明文，这是正常现象。需要修改时重新保存一个同名 Secret。
+
+### Secret 3
+
+名称：
+
+```text
+BJTU_RECIPIENT
+```
+
+值：
+
+```text
+接收北京交通大学公告的朋友邮箱
+```
+
+程序会按学校分发：
+
+- 中央财经大学公告发送到 `SMTP_USERNAME`
+- 北京交通大学公告发送到 `BJTU_RECIPIENT`
+
+如果北交公告需要同时发送给多人，可以在一个 Secret 中用英文逗号分隔：
+
+```text
+friend1@example.com,friend2@example.com
+```
 
 ## 第四步：允许工作流保存公告状态
 
@@ -143,8 +169,13 @@ Read and write permissions
    只测试邮件，不抓取和保存公告
    ```
 
-4. 点击绿色的 `Run workflow`
-5. 等待任务完成
+4. 在“测试邮件发给谁”中选择：
+
+   - `owner`：发送给仓库主人
+   - `bjtu-friend`：发送给接收北交公告的朋友
+
+5. 点击绿色的 `Run workflow`
+6. 等待任务完成
 
 绿色对勾表示成功。此时 QQ 邮箱应该收到“邮件配置测试”。
 
@@ -156,7 +187,7 @@ Read and write permissions
 
 第一次正式运行会：
 
-1. 抓取当前公告
+1. 抓取中财和北交当前公告
 2. 建立 `state/radar.db`
 3. 不发送旧公告邮件
 4. 自动提交一条：
@@ -230,6 +261,20 @@ Secret 名称必须完全是：
 
 ```text
 SMTP_USERNAME
+```
+
+### `需要收件人环境变量 BJTU_RECIPIENT`
+
+没有创建朋友的收件邮箱 Secret。进入仓库：
+
+```text
+Settings → Secrets and variables → Actions
+```
+
+添加：
+
+```text
+BJTU_RECIPIENT
 ```
 
 ### 邮箱认证失败

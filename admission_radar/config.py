@@ -14,6 +14,7 @@ class ConfigError(ValueError):
 
 
 ENV_PLACEHOLDER = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+RECIPIENT_SEPARATOR = re.compile(r"[,;，；\n]+")
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ class WebsiteConfig:
     name: str
     url: str
     parser: str
+    recipient_env: str = ""
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,29 @@ class AppConfig:
     request: RequestConfig
     email: EmailConfig
     websites: tuple[WebsiteConfig, ...]
+
+
+def resolve_website_recipients(
+    website: WebsiteConfig,
+    default_recipients: tuple[str, ...],
+) -> tuple[str, ...]:
+    """按网站解析收件人；未指定时使用全局默认收件人。"""
+
+    if not website.recipient_env:
+        return default_recipients
+
+    raw_value = os.environ.get(website.recipient_env, "")
+    recipients = tuple(
+        item.strip()
+        for item in RECIPIENT_SEPARATOR.split(raw_value)
+        if item.strip()
+    )
+    if not recipients:
+        raise ConfigError(
+            f"网站“{website.name}”需要收件人环境变量"
+            f"“{website.recipient_env}”，但当前未设置。"
+        )
+    return recipients
 
 
 def _expect_object(value: Any, field: str) -> dict[str, Any]:
@@ -220,6 +245,9 @@ def load_config(path: str | Path) -> AppConfig:
             name=_required_text(website_raw, "name", context),
             url=_required_text(website_raw, "url", context),
             parser=_required_text(website_raw, "parser", context),
+            recipient_env=str(
+                website_raw.get("recipient_env", "")
+            ).strip(),
         )
         if website.id in seen_ids:
             raise ConfigError(f"网站 id 重复：{website.id}")

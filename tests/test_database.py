@@ -16,6 +16,7 @@ class DatabaseTests(unittest.TestCase):
             name="中央财经大学硕士招生（双证）",
             url="https://gs.cufe.edu.cn/zsgz/sszs_sz_.htm",
             parser="cufe_master",
+            recipient_env="",
         )
         baseline = [
             Notice("公告 A", "https://gs.cufe.edu.cn/info/1028/1.htm", "2026-01-01"),
