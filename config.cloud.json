@@ -1,0 +1,33 @@
+{
+  "database_path": "state/radar.db",
+  "log_path": "logs/cloud.log",
+  "request": {
+    "timeout_seconds": 20,
+    "retries": 2,
+    "retry_backoff_seconds": 1.0,
+    "user_agent": "AdmissionRadar/1.1 (GitHub Actions announcement monitor)"
+  },
+  "email": {
+    "enabled": true,
+    "smtp_host": "smtp.qq.com",
+    "smtp_port": 465,
+    "security": "ssl",
+    "username": "${SMTP_USERNAME}",
+    "password": "",
+    "password_env": "SMTP_PASSWORD",
+    "from_address": "${SMTP_USERNAME}",
+    "to_addresses": [
+      "${SMTP_USERNAME}"
+    ],
+    "subject_prefix": "[招生公告监控]",
+    "timeout_seconds": 30
+  },
+  "websites": [
+    {
+      "id": "cufe-master",
+      "name": "中央财经大学硕士招生（双证）",
+      "url": "https://gs.cufe.edu.cn/zsgz/sszs_sz_.htm",
+      "parser": "cufe_master"
+    }
+  ]
+}
