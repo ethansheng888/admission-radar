@@ -52,11 +52,13 @@ jobs:
       - name: Run tests
         run: python -m unittest discover -s tests -v
 
-      - name: Read previous notice count
+      - name: Read previous notice state
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
         id: before
         shell: bash
-        run: echo "count=$(python scripts/count_notices.py state/radar.db)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "count=$(python scripts/count_notices.py state/radar.db)" >> "$GITHUB_OUTPUT"
+          echo "pending=$(python scripts/count_notices.py state/radar.db --pending)" >> "$GITHUB_OUTPUT"
 
       - name: Send test email
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_email }}
@@ -87,13 +89,15 @@ jobs:
         run: python main.py --config config.cloud.json
 
       - name: Persist state when needed
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.test_email) && steps.before.outcome == 'success' }}
         shell: bash
         env:
           BEFORE_COUNT: ${{ steps.before.outputs.count }}
+          BEFORE_PENDING: ${{ steps.before.outputs.pending }}
         run: |
           set -euo pipefail
           AFTER_COUNT="$(python scripts/count_notices.py state/radar.db)"
+          AFTER_PENDING="$(python scripts/count_notices.py state/radar.db --pending)"
           if [ "$AFTER_COUNT" -lt "$BEFORE_COUNT" ]; then
             echo "Notice count unexpectedly decreased."
             exit 1
@@ -102,7 +106,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if [ "$AFTER_COUNT" -gt "$BEFORE_COUNT" ]; then
+          if [ "$AFTER_COUNT" -ne "$BEFORE_COUNT" ] || \
+             [ "$AFTER_PENDING" -ne "$BEFORE_PENDING" ]; then
             git add state/radar.db
           fi
 
