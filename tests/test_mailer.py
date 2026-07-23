@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import unittest
+from email.message import EmailMessage
 from unittest.mock import patch
 
 from admission_radar.config import EmailConfig
-from admission_radar.mailer import send_notices
+from admission_radar.mailer import EmailError, _deliver, send_notices
 from admission_radar.models import StoredNotice
 
 
 class MailerTests(unittest.TestCase):
-    def test_notice_email_contains_clickable_link_and_full_title(self) -> None:
-        config = EmailConfig(
+    @staticmethod
+    def make_config() -> EmailConfig:
+        return EmailConfig(
             enabled=True,
             smtp_host="smtp.example.com",
             smtp_port=465,
@@ -23,6 +25,9 @@ class MailerTests(unittest.TestCase):
             subject_prefix="[招生公告监控]",
             timeout_seconds=30,
         )
+
+    def test_notice_email_contains_clickable_link_and_full_title(self) -> None:
+        config = self.make_config()
         notice = StoredNotice(
             id=1,
             website_id="cufe-master",
@@ -42,6 +47,39 @@ class MailerTests(unittest.TestCase):
             notice.url,
             message.get_body(preferencelist=("html",)).get_content(),
         )
+
+    def test_delivery_retries_transient_failures(self) -> None:
+        message = EmailMessage()
+        message["To"] = "receiver@example.com"
+
+        with (
+            patch(
+                "admission_radar.mailer._deliver_once",
+                side_effect=[EmailError("temporary"), None],
+            ) as deliver_once,
+            patch("admission_radar.mailer.time.sleep") as sleep,
+        ):
+            _deliver(self.make_config(), message)
+
+        self.assertEqual(deliver_once.call_count, 2)
+        sleep.assert_called_once_with(3)
+
+    def test_delivery_fails_after_three_attempts(self) -> None:
+        message = EmailMessage()
+        message["To"] = "receiver@example.com"
+
+        with (
+            patch(
+                "admission_radar.mailer._deliver_once",
+                side_effect=EmailError("offline"),
+            ) as deliver_once,
+            patch("admission_radar.mailer.time.sleep") as sleep,
+        ):
+            with self.assertRaisesRegex(EmailError, "连续尝试 3 次仍失败"):
+                _deliver(self.make_config(), message)
+
+        self.assertEqual(deliver_once.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
 
 
 if __name__ == "__main__":
