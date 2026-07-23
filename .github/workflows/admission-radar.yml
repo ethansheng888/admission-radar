@@ -12,6 +12,15 @@ on:
         required: false
         type: boolean
         default: false
+      test_email_target:
+        description: "测试邮件发给谁"
+        required: false
+        type: choice
+        options:
+          - owner
+          - cufe-group
+          - bjtu-friend
+        default: owner
 
 permissions:
   contents: write
@@ -54,13 +63,27 @@ jobs:
         env:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-        run: python main.py --config config.cloud.json --test-email
+          CUFE_RECIPIENTS: ${{ secrets.CUFE_RECIPIENTS }}
+          BJTU_RECIPIENT: ${{ secrets.BJTU_RECIPIENT }}
+        shell: bash
+        run: |
+          if [ "${{ inputs.test_email_target }}" = "bjtu-friend" ]; then
+            python main.py --config config.cloud.json --test-email \
+              --test-email-website bjtu-master
+          elif [ "${{ inputs.test_email_target }}" = "cufe-group" ]; then
+            python main.py --config config.cloud.json --test-email \
+              --test-email-website cufe-master
+          else
+            python main.py --config config.cloud.json --test-email
+          fi
 
       - name: Check announcements
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
         env:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          CUFE_RECIPIENTS: ${{ secrets.CUFE_RECIPIENTS }}
+          BJTU_RECIPIENT: ${{ secrets.BJTU_RECIPIENT }}
         run: python main.py --config config.cloud.json
 
       - name: Persist state when needed
