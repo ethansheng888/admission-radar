@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import html
+import logging
 import smtplib
 import ssl
+import time
 from email.message import EmailMessage
 from email.utils import formatdate
 
@@ -12,6 +14,11 @@ from .models import StoredNotice
 
 class EmailError(RuntimeError):
     """邮件发送失败。"""
+
+
+LOGGER = logging.getLogger(__name__)
+DELIVERY_ATTEMPTS = 3
+RETRY_DELAYS_SECONDS = (3, 10)
 
 
 def _open_smtp(config: EmailConfig):
@@ -36,14 +43,42 @@ def _open_smtp(config: EmailConfig):
     return client
 
 
-def _deliver(config: EmailConfig, message: EmailMessage) -> None:
+def _deliver_once(config: EmailConfig, message: EmailMessage) -> None:
     try:
         with _open_smtp(config) as client:
             if config.username:
                 client.login(config.username, config.resolved_password())
-            client.send_message(message)
+            refused = client.send_message(message)
+            if refused:
+                refused_addresses = "、".join(sorted(refused))
+                raise EmailError(f"SMTP 拒收以下收件人：{refused_addresses}")
     except (OSError, smtplib.SMTPException) as exc:
         raise EmailError(str(exc)) from exc
+
+
+def _deliver(config: EmailConfig, message: EmailMessage) -> None:
+    last_error: EmailError | None = None
+    for attempt in range(1, DELIVERY_ATTEMPTS + 1):
+        try:
+            _deliver_once(config, message)
+            return
+        except EmailError as exc:
+            last_error = exc
+            if attempt >= DELIVERY_ATTEMPTS:
+                break
+            delay = RETRY_DELAYS_SECONDS[attempt - 1]
+            LOGGER.warning(
+                "邮件发送第 %d/%d 次失败，%d 秒后重试：%s",
+                attempt,
+                DELIVERY_ATTEMPTS,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+
+    raise EmailError(
+        f"连续尝试 {DELIVERY_ATTEMPTS} 次仍失败：{last_error}"
+    ) from last_error
 
 
 def _base_message(config: EmailConfig, subject: str) -> EmailMessage:
