@@ -8,6 +8,11 @@ on:
     - cron: "27 * * * *"
     - cron: "47 * * * *"
 
+  # 供 cron-job.org 等外部定时器调用，作为 GitHub schedule 的备用入口。
+  repository_dispatch:
+    types:
+      - hourly-monitor
+
   workflow_dispatch:
     inputs:
       test_email:
@@ -52,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "$GITHUB_EVENT_NAME" != "schedule" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             HOUR_KEY="manual-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             echo "hour_key=$HOUR_KEY" >> "$GITHUB_OUTPUT"
@@ -64,6 +69,7 @@ jobs:
           export HOUR_KEY RUN_HISTORY
 
           echo "hour_key=$HOUR_KEY" >> "$GITHUB_OUTPUT"
+          echo "Automated run source: $GITHUB_EVENT_NAME"
 
           if python - <<'PY'
           import json
