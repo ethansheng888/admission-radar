@@ -1,6 +1,6 @@
 # GitHub Actions 云端部署
 
-部署完成后，GitHub 会每小时第 17 分钟在云端检查一次中财硕士招生公告。你的电脑关机、休眠或者断网都不影响云端任务。
+部署完成后，系统会在云端检查中财和北交硕士招生公告。你的电脑关机、休眠或者断网都不影响云端任务。
 
 ## 为什么选择公开仓库
 
@@ -216,18 +216,103 @@ Read and write permissions
 
 之后检测到新公告时才会发送邮件，并把新状态提交回仓库。
 
-## 自动运行时间
+## 自动运行时间与双保险
 
-工作流配置为：
+工作流保留 GitHub 自带定时器，并提供 `repository_dispatch` 外部触发入口：
 
 ```yaml
-cron: "17 * * * *"
-timezone: "Asia/Shanghai"
+schedule:
+  - cron: "7 * * * *"
+  - cron: "27 * * * *"
+  - cron: "47 * * * *"
+
+repository_dispatch:
+  types:
+    - hourly-monitor
 ```
 
-即北京时间每小时第 17 分钟运行一次。选择第 17 分钟是为了避开 GitHub Actions 整点高峰。
+同一北京时间小时只会真正检查一次。GitHub 自带定时器或外部定时器只要有一个成功，其他触发会被安全跳过，不会重复检测或重复发邮件。
 
-计划任务不是严格实时服务。GitHub 负载较高时可能延迟，极端情况下也可能跳过一次；下一小时仍会继续检查。
+GitHub 自带计划任务不是严格实时服务，负载较高时可能延迟或跳过。因此建议再配置一个免费的外部定时器作为保险。
+
+## 配置免费外部定时器
+
+推荐使用 cron-job.org。为了安全，使用仅能访问本仓库的 GitHub Fine-grained token，不要使用邮箱密码，也不要把 token 写进仓库文件。
+
+### 1. 创建最小权限 GitHub Token
+
+进入 GitHub：
+
+```text
+头像 → Settings
+→ Developer settings
+→ Personal access tokens
+→ Fine-grained tokens
+→ Generate new token
+```
+
+按下面设置：
+
+- Token name：`admission-radar-scheduler`
+- Expiration：按需要选择，到期前需要重新生成
+- Repository access：`Only select repositories`
+- 只选择：`admission-radar`
+- Repository permissions → `Contents`：`Read and write`
+
+生成后立即复制 token。GitHub 只显示一次。
+
+### 2. 在 cron-job.org 创建任务
+
+登录 <https://cron-job.org/>，新建 Cronjob：
+
+- Title：`Admission Radar`
+- URL：
+
+  ```text
+  https://api.github.com/repos/ethansheng888/admission-radar/dispatches
+  ```
+
+- Schedule：每小时一次，建议每小时第 12 分钟
+- Request method：`POST`
+- Request body：
+
+  ```json
+  {"event_type":"hourly-monitor"}
+  ```
+
+- Headers：
+
+  ```text
+  Accept: application/vnd.github+json
+  Authorization: Bearer 这里粘贴GitHub_Token
+  Content-Type: application/json
+  X-GitHub-Api-Version: 2022-11-28
+  ```
+
+保存后执行一次测试。HTTP 状态码 `204` 表示 GitHub 已接受触发。
+
+### 3. 在 GitHub 验证
+
+进入：
+
+```text
+Actions → Admission Radar
+```
+
+外部触发成功后会出现：
+
+```text
+repository_dispatch
+```
+
+点进运行记录，确认 `Check announcements` 和 `Persist state when needed` 都是绿色。
+
+### 安全提醒
+
+- 不要把 token 发给其他人或写入仓库
+- cron-job.org 中只保存最小权限 token
+- token 到期或泄露时，立即在 GitHub 删除并重新生成
+- 停用监控时，同时禁用 cron-job.org 任务
 
 ## 公开仓库的 60 天规则
 
@@ -239,7 +324,7 @@ state/heartbeat.txt
 
 因此即使很久没有新公告，也会产生一次轻量提交，保持工作流活跃。
 
-## 修改检查频率
+## 修改 GitHub 自带检查频率
 
 打开：
 
@@ -247,10 +332,12 @@ state/heartbeat.txt
 .github/workflows/admission-radar.yml
 ```
 
-当前每小时运行一次：
+当前每小时尝试三次，但同一小时只真正检查一次：
 
 ```yaml
-- cron: "17 * * * *"
+- cron: "7 * * * *"
+- cron: "27 * * * *"
+- cron: "47 * * * *"
 ```
 
 每两小时运行一次：
