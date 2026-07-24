@@ -2,10 +2,11 @@ name: Admission Radar
 
 on:
   schedule:
-    # 每小时尝试三次，降低 GitHub Actions 延迟或漏触发的影响。
+    # 分成三个独立计划，增加 GitHub 成功注册定时器的概率。
     # 同一北京时间小时只真正检查一次。
-    - cron: "7,27,47 * * * *"
-      timezone: "Asia/Shanghai"
+    - cron: "7 * * * *"
+    - cron: "27 * * * *"
+    - cron: "47 * * * *"
 
   workflow_dispatch:
     inputs:
