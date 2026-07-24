@@ -2,9 +2,11 @@ name: Admission Radar
 
 on:
   schedule:
-    # 每小时第 17 分钟运行，避开整点的 GitHub Actions 高峰。
-    - cron: "17 * * * *"
+    # 每小时尝试三次，降低 GitHub Actions 延迟或漏触发的影响。
+    # 同一北京时间小时只真正检查一次。
+    - cron: "7,27,47 * * * *"
       timezone: "Asia/Shanghai"
+
   workflow_dispatch:
     inputs:
       test_email:
@@ -12,6 +14,7 @@ on:
         required: false
         type: boolean
         default: false
+
       test_email_target:
         description: "测试邮件发给谁"
         required: false
@@ -40,28 +43,85 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Decide whether this hour needs a check
+        id: hourly_gate
+        shell: bash
+        env:
+          RUN_HISTORY: state/run_history.jsonl
+        run: |
+          set -euo pipefail
+
+          if [ "$GITHUB_EVENT_NAME" != "schedule" ]; then
+            HOUR_KEY="manual-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "hour_key=$HOUR_KEY" >> "$GITHUB_OUTPUT"
+            echo "Manual run: bypassing hourly deduplication."
+            exit 0
+          fi
+
+          HOUR_KEY="$(TZ=Asia/Shanghai date +'%Y-%m-%dT%H')"
+          export HOUR_KEY RUN_HISTORY
+
+          echo "hour_key=$HOUR_KEY" >> "$GITHUB_OUTPUT"
+
+          if python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUN_HISTORY"])
+          hour_key = os.environ["HOUR_KEY"]
+
+          if not path.exists():
+              raise SystemExit(1)
+
+          for raw_line in path.read_text(encoding="utf-8").splitlines():
+              try:
+                  entry = json.loads(raw_line)
+              except json.JSONDecodeError:
+                  continue
+
+              if (
+                  entry.get("hour") == hour_key
+                  and entry.get("status") == "success"
+              ):
+                  raise SystemExit(0)
+
+          raise SystemExit(1)
+          PY
+          then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "This Beijing-time hour already has a successful check."
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "No successful check exists for this Beijing-time hour."
+          fi
+
       - name: Set up Python
+        if: ${{ steps.hourly_gate.outputs.should_run == 'true' }}
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Install dependencies
+        if: ${{ steps.hourly_gate.outputs.should_run == 'true' }}
         run: python -m pip install -r requirements.txt
 
       - name: Run tests
+        if: ${{ steps.hourly_gate.outputs.should_run == 'true' }}
         run: python -m unittest discover -s tests -v
 
       - name: Read previous notice state
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
         id: before
+        if: ${{ steps.hourly_gate.outputs.should_run == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
         shell: bash
         run: |
           echo "count=$(python scripts/count_notices.py state/radar.db)" >> "$GITHUB_OUTPUT"
           echo "pending=$(python scripts/count_notices.py state/radar.db --pending)" >> "$GITHUB_OUTPUT"
 
       - name: Send test email
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_email }}
+        if: ${{ steps.hourly_gate.outputs.should_run == 'true' && github.event_name == 'workflow_dispatch' && inputs.test_email }}
         env:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
@@ -72,15 +132,18 @@ jobs:
           if [ "${{ inputs.test_email_target }}" = "bjtu-friend" ]; then
             python main.py --config config.cloud.json --test-email \
               --test-email-website bjtu-master
+
           elif [ "${{ inputs.test_email_target }}" = "cufe-group" ]; then
             python main.py --config config.cloud.json --test-email \
               --test-email-website cufe-master
+
           else
             python main.py --config config.cloud.json --test-email
           fi
 
       - name: Check announcements
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
+        id: check_announcements
+        if: ${{ steps.hourly_gate.outputs.should_run == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
         env:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
@@ -88,30 +151,82 @@ jobs:
           BJTU_RECIPIENT: ${{ secrets.BJTU_RECIPIENT }}
         run: python main.py --config config.cloud.json
 
+      - name: Record successful check
+        if: ${{ steps.hourly_gate.outputs.should_run == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) && steps.check_announcements.outcome == 'success' }}
+        env:
+          HOUR_KEY: ${{ steps.hourly_gate.outputs.hour_key }}
+          RUN_HISTORY: state/run_history.jsonl
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          now_utc = datetime.now(timezone.utc)
+
+          entry = {
+              "hour": os.environ["HOUR_KEY"],
+              "checked_at_beijing": now_utc.astimezone(
+                  ZoneInfo("Asia/Shanghai")
+              ).isoformat(timespec="seconds"),
+              "checked_at_utc": now_utc.isoformat(timespec="seconds"),
+              "status": "success",
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+          }
+
+          path = Path(os.environ["RUN_HISTORY"])
+          path.parent.mkdir(parents=True, exist_ok=True)
+
+          with path.open("a", encoding="utf-8") as handle:
+              handle.write(
+                  json.dumps(entry, ensure_ascii=False) + "\n"
+              )
+          PY
+
       - name: Persist state when needed
-        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.test_email) && steps.before.outcome == 'success' }}
+        if: ${{ always() && steps.hourly_gate.outputs.should_run == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) && steps.before.outcome == 'success' }}
         shell: bash
         env:
           BEFORE_COUNT: ${{ steps.before.outputs.count }}
           BEFORE_PENDING: ${{ steps.before.outputs.pending }}
         run: |
           set -euo pipefail
-          AFTER_COUNT="$(python scripts/count_notices.py state/radar.db)"
-          AFTER_PENDING="$(python scripts/count_notices.py state/radar.db --pending)"
+
+          AFTER_COUNT="$(
+            python scripts/count_notices.py state/radar.db
+          )"
+
+          AFTER_PENDING="$(
+            python scripts/count_notices.py state/radar.db --pending
+          )"
+
           if [ "$AFTER_COUNT" -lt "$BEFORE_COUNT" ]; then
             echo "Notice count unexpectedly decreased."
             exit 1
           fi
 
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
 
           if [ "$AFTER_COUNT" -ne "$BEFORE_COUNT" ] || \
              [ "$AFTER_PENDING" -ne "$BEFORE_PENDING" ]; then
             git add state/radar.db
           fi
 
-          python scripts/update_heartbeat.py state/heartbeat.txt --max-age-days 30
+          if [ -f state/run_history.jsonl ]; then
+            git add state/run_history.jsonl
+          fi
+
+          python scripts/update_heartbeat.py \
+            state/heartbeat.txt \
+            --max-age-days 30
+
           git add state/heartbeat.txt
 
           if git diff --cached --quiet; then
@@ -119,5 +234,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m "chore: update admission radar state"
+          git commit -m "chore: record admission radar run"
           git push origin "HEAD:${GITHUB_REF_NAME}"
