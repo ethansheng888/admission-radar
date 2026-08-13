@@ -65,6 +65,10 @@ class CufeParserTests(unittest.TestCase):
         with self.assertRaises(FetchError):
             parse_cufe_master(b"<html><body>changed</body></html>", PAGE_URL)
 
+    def test_rejects_non_utf8_html(self) -> None:
+        with self.assertRaises(FetchError):
+            parse_cufe_master(b"\xff\xfe\x00", PAGE_URL)
+
 
 class BjtuParserTests(unittest.TestCase):
     def test_extracts_bjtu_notice(self) -> None:
