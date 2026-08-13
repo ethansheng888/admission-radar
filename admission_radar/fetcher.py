@@ -20,6 +20,21 @@ class FetchError(RuntimeError):
 Parser = Callable[[bytes, str], list[Notice]]
 
 
+def _decode_html(html: bytes) -> str:
+    """Decode the monitored Chinese sites without charset guessing."""
+
+    # Both monitored list pages are UTF-8. Passing raw bytes to
+    # BeautifulSoup lets its optional detector guess the encoding, and a
+    # dependency update can turn short Chinese fixtures (or pages) into
+    # mojibake. Honour an optional UTF-8 BOM and fail safely otherwise.
+    try:
+        return html.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise FetchError(
+            "公告页不是有效的 UTF-8 内容，程序已停止本次更新以避免误判。"
+        ) from exc
+
+
 def canonicalize_url(url: str) -> str:
     """去掉片段并统一主机名大小写，生成稳定的公告标识。"""
 
@@ -47,7 +62,7 @@ def _parse_cufe_date(raw_text: str) -> str | None:
 def parse_cufe_master(html: bytes, page_url: str) -> list[Notice]:
     """解析中央财经大学研究生院“硕士招生（双证）”列表页。"""
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(_decode_html(html), "html.parser")
     anchors = soup.select("div.inner_s1 ul > li > a[href]")
 
     notices: list[Notice] = []
@@ -102,7 +117,7 @@ def parse_cufe_master(html: bytes, page_url: str) -> list[Notice]:
 def parse_bjtu_master(html: bytes, page_url: str) -> list[Notice]:
     """解析北京交通大学研究生院“硕士招生”列表页。"""
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(_decode_html(html), "html.parser")
     anchors = soup.select(
         "section.sub_right_list ul.list01 > li > a[href]"
     )
