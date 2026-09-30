@@ -9,7 +9,7 @@
   },
   "email": {
     "enabled": true,
-    "smtp_host": "smtp.qq.com",
+    "smtp_host": "smtp.gmail.com",
     "smtp_port": 465,
     "security": "ssl",
     "username": "${SMTP_USERNAME}",
