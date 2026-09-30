@@ -23,37 +23,77 @@ RETRY_DELAYS_SECONDS = (3, 10)
 
 def _open_smtp(config: EmailConfig):
     context = ssl.create_default_context()
-    if config.security == "ssl":
-        return smtplib.SMTP_SSL(
+    client = None
+    phase = "连接 SMTP"
+    try:
+        if config.security == "ssl":
+            return smtplib.SMTP_SSL(
+                config.smtp_host,
+                config.smtp_port,
+                timeout=config.timeout_seconds,
+                context=context,
+            )
+
+        client = smtplib.SMTP(
             config.smtp_host,
             config.smtp_port,
             timeout=config.timeout_seconds,
-            context=context,
         )
+        if config.security == "starttls":
+            phase = "协商 STARTTLS"
+            client.ehlo()
+            client.starttls(context=context)
+            client.ehlo()
+        return client
+    except (OSError, smtplib.SMTPException) as exc:
+        if client is not None:
+            client.close()
+        raise EmailError(
+            f"{phase}失败（{config.smtp_host}:{config.smtp_port}，"
+            f"{type(exc).__name__}）：{exc}"
+        ) from exc
 
-    client = smtplib.SMTP(
-        config.smtp_host,
-        config.smtp_port,
-        timeout=config.timeout_seconds,
-    )
-    if config.security == "starttls":
-        client.ehlo()
-        client.starttls(context=context)
-        client.ehlo()
-    return client
+
+def _authenticate(client, config: EmailConfig) -> None:
+    try:
+        client.ehlo_or_helo_if_needed()
+        if config.username:
+            client.login(config.username, config.resolved_password())
+    except (OSError, smtplib.SMTPException) as exc:
+        raise EmailError(f"SMTP 登录失败（{type(exc).__name__}）：{exc}") from exc
+
+
+def check_email_connection(config: EmailConfig) -> None:
+    """检查连接和认证，不发送邮件，也不修改公告状态。"""
+    client = _open_smtp(config)
+    try:
+        _authenticate(client, config)
+    finally:
+        client.close()
 
 
 def _deliver_once(config: EmailConfig, message: EmailMessage) -> None:
+    client = _open_smtp(config)
     try:
-        with _open_smtp(config) as client:
-            if config.username:
-                client.login(config.username, config.resolved_password())
+        _authenticate(client, config)
+        try:
             refused = client.send_message(message)
-            if refused:
-                refused_addresses = "、".join(sorted(refused))
-                raise EmailError(f"SMTP 拒收以下收件人：{refused_addresses}")
-    except (OSError, smtplib.SMTPException) as exc:
-        raise EmailError(str(exc)) from exc
+        except (OSError, smtplib.SMTPException) as exc:
+            raise EmailError(
+                f"SMTP 提交邮件失败（{type(exc).__name__}）：{exc}"
+            ) from exc
+        if refused:
+            refused_addresses = "、".join(sorted(refused))
+            raise EmailError(f"SMTP 拒收以下收件人：{refused_addresses}")
+
+        # send_message 已确认服务器接受邮件；QUIT 失败不能把它变成
+        # 发送失败，否则下次运行会重复发送已被接受的通知。
+        try:
+            client.quit()
+        except (OSError, smtplib.SMTPException) as exc:
+            LOGGER.warning("邮件已被 SMTP 接受，退出连接时发生错误：%s", exc)
+    finally:
+        client.close()
 
 
 def _deliver(config: EmailConfig, message: EmailMessage) -> None:
