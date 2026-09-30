@@ -1538,3 +1538,4 @@
 {"hour": "2026-09-28T17", "checked_at_beijing": "2026-09-28T17:00:41+08:00", "checked_at_utc": "2026-09-28T09:00:41+00:00", "status": "success", "event": "repository_dispatch", "run_id": 36400778940, "run_attempt": 1}
 {"hour": "2026-09-28T18", "checked_at_beijing": "2026-09-28T18:00:44+08:00", "checked_at_utc": "2026-09-28T10:00:44+00:00", "status": "success", "event": "repository_dispatch", "run_id": 36407043835, "run_attempt": 1}
 {"hour": "2026-09-28T19", "checked_at_beijing": "2026-09-28T19:00:43+08:00", "checked_at_utc": "2026-09-28T11:00:43+00:00", "status": "success", "event": "repository_dispatch", "run_id": 36413046245, "run_attempt": 1}
+{"hour": "manual-36696789843-1", "checked_at_beijing": "2026-09-30T17:33:05+08:00", "checked_at_utc": "2026-09-30T09:33:05+00:00", "status": "success", "event": "workflow_dispatch", "run_id": 36696789843, "run_attempt": 1}
