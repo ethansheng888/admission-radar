@@ -1,6 +1,11 @@
 name: Admission Radar
 
 on:
+  # Validate a deliberate manual handoff immediately; the sender switch still gates mail.
+  push:
+    paths:
+      - config.sender.json
+
   schedule:
     # 分成三个独立计划，增加 GitHub 成功注册定时器的概率。
     # 同一北京时间小时只真正检查一次。
@@ -56,6 +61,14 @@ jobs:
           RUN_HISTORY: state/run_history.jsonl
         run: |
           set -euo pipefail
+
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            HOUR_KEY="$(TZ=Asia/Shanghai date +'%Y-%m-%dT%H')"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "hour_key=$HOUR_KEY" >> "$GITHUB_OUTPUT"
+            echo "Sender switch changed: validate the selected mode immediately."
+            exit 0
+          fi
 
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             HOUR_KEY="manual-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
