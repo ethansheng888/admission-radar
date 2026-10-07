@@ -46,6 +46,14 @@ class SenderPolicyTests(unittest.TestCase):
                 create.return_value.__enter__.return_value.get.return_value = self.reply(policy)
                 with self.assertRaises(SenderPolicyError): read_policy(URL)
 
+    def test_each_policy_read_uses_a_fresh_cache_key(self):
+        with patch('admission_radar.sender.requests.Session') as create, \
+                patch('admission_radar.sender.time.time_ns', side_effect=[100,101]):
+            session=create.return_value.__enter__.return_value
+            session.get.return_value=self.reply(dict(schema_version=1,active_sender='github'))
+            read_policy(URL); read_policy(URL)
+            self.assertEqual([call.kwargs['params']['admission_read'] for call in session.get.call_args_list], ['100','101'])
+
     def test_network_errors_do_not_echo_tokens_or_server_bodies(self):
         secret = 'fake-private-token'
         with patch.dict(os.environ, {'ADMISSION_RADAR_POLICY_TOKEN': secret}), patch('admission_radar.sender.requests.Session') as create:

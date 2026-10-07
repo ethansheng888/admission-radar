@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import re
+import time
 from urllib.parse import urlsplit
 
 import requests
@@ -36,7 +37,9 @@ def read_policy(url: str) -> dict:
         headers['Authorization'] = 'Bearer ' + token
     try:
         with requests.Session() as session:
-            response = session.get(url, headers=headers, timeout=10, allow_redirects=False)
+            response = session.get(url, headers=headers,
+                                   params={'admission_read': str(time.time_ns())},
+                                   timeout=10, allow_redirects=False)
             if response.status_code != 200:
                 raise SenderPolicyError('sender_policy_http_' + str(response.status_code))
             if len(response.content) > 65536:
