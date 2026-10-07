@@ -3,6 +3,7 @@ name: Admission Radar
 on:
   # Validate a deliberate manual handoff immediately; the sender switch still gates mail.
   push:
+    branches: [main]
     paths:
       - config.sender.json
 
@@ -45,6 +46,7 @@ concurrency:
 
 jobs:
   monitor:
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
