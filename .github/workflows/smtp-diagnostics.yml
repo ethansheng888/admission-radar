@@ -15,8 +15,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
       - name: Check SMTP connection and login without sending email
         env:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-        run: python -m scripts.diagnose_smtp --config config.cloud.json --compare-qq
+        run: python main.py --config config.cloud.json --smtp-check

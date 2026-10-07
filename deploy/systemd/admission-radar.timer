@@ -1,0 +1,12 @@
+[Unit]
+Description=Check admissions every hour
+
+[Timer]
+OnCalendar=*-*-* *:12:00 Asia/Shanghai
+Persistent=true
+AccuracySec=30s
+RandomizedDelaySec=0
+Unit=admission-radar.service
+
+[Install]
+WantedBy=timers.target

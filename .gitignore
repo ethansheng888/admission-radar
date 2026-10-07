@@ -6,3 +6,8 @@ data/
 logs/
 .idea/
 .vscode/
+*.env
+*.db-wal
+*.db-shm
+config.vps.local.json
+deployment-status.json

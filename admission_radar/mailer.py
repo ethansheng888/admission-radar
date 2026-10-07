@@ -6,7 +6,7 @@ import smtplib
 import ssl
 import time
 from email.message import EmailMessage
-from email.utils import formatdate
+from email.utils import formatdate, make_msgid
 
 from .config import EmailConfig
 from .models import StoredNotice
@@ -14,6 +14,23 @@ from .models import StoredNotice
 
 class EmailError(RuntimeError):
     """邮件发送失败。"""
+    def __init__(self, message: str, *, stage: str = "delivery", code: int | None = None, uncertain: bool = False):
+        super().__init__(message)
+        self.stage = stage
+        self.code = code
+        self.uncertain = uncertain
+
+    @property
+    def error_code(self) -> str:
+        return f"{self.stage}:{self.code if self.code is not None else type(self).__name__}"
+
+
+def _email_error(stage: str, exc: Exception, *, uncertain: bool = False) -> EmailError:
+    code = getattr(exc, "smtp_code", None)
+    code = code if isinstance(code, int) else None
+    # Never retain arbitrary SMTP responses: a peer can echo sensitive input.
+    return EmailError(f"SMTP {stage}失败（{type(exc).__name__}，代码 {code or '未知'}）",
+                      stage=stage, code=code, uncertain=uncertain)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -48,10 +65,7 @@ def _open_smtp(config: EmailConfig):
     except (OSError, smtplib.SMTPException) as exc:
         if client is not None:
             client.close()
-        raise EmailError(
-            f"{phase}失败（{config.smtp_host}:{config.smtp_port}，"
-            f"{type(exc).__name__}）：{exc}"
-        ) from exc
+        raise _email_error(phase, exc) from None
 
 
 def _authenticate(client, config: EmailConfig) -> None:
@@ -60,7 +74,7 @@ def _authenticate(client, config: EmailConfig) -> None:
         if config.username:
             client.login(config.username, config.resolved_password())
     except (OSError, smtplib.SMTPException) as exc:
-        raise EmailError(f"SMTP 登录失败（{type(exc).__name__}）：{exc}") from exc
+        raise _email_error("authentication", exc) from None
 
 
 def check_email_connection(config: EmailConfig) -> None:
@@ -79,21 +93,21 @@ def _deliver_once(config: EmailConfig, message: EmailMessage) -> None:
         try:
             refused = client.send_message(message)
         except (OSError, smtplib.SMTPException) as exc:
-            raise EmailError(
-                f"SMTP 提交邮件失败（{type(exc).__name__}）：{exc}"
-            ) from exc
+            raise _email_error("submission", exc, uncertain=isinstance(exc, (OSError, smtplib.SMTPServerDisconnected))) from None
         if refused:
-            refused_addresses = "、".join(sorted(refused))
-            raise EmailError(f"SMTP 拒收以下收件人：{refused_addresses}")
+            raise EmailError(f"SMTP 拒收 {len(refused)} 个收件人", stage="recipient")
 
         # send_message 已确认服务器接受邮件；QUIT 失败不能把它变成
         # 发送失败，否则下次运行会重复发送已被接受的通知。
         try:
             client.quit()
         except (OSError, smtplib.SMTPException) as exc:
-            LOGGER.warning("邮件已被 SMTP 接受，退出连接时发生错误：%s", exc)
+            LOGGER.warning("邮件已被 SMTP 接受，QUIT 异常类型：%s", type(exc).__name__)
     finally:
-        client.close()
+        try:
+            client.close()
+        except OSError:
+            LOGGER.warning("SMTP 本地连接清理失败")
 
 
 def _deliver(config: EmailConfig, message: EmailMessage) -> None:
@@ -104,6 +118,8 @@ def _deliver(config: EmailConfig, message: EmailMessage) -> None:
             return
         except EmailError as exc:
             last_error = exc
+            if exc.uncertain:
+                raise exc  # Retain uncertain status; do not immediately duplicate DATA.
             if attempt >= DELIVERY_ATTEMPTS:
                 break
             delay = RETRY_DELAYS_SECONDS[attempt - 1]
@@ -116,9 +132,8 @@ def _deliver(config: EmailConfig, message: EmailMessage) -> None:
             )
             time.sleep(delay)
 
-    raise EmailError(
-        f"连续尝试 {DELIVERY_ATTEMPTS} 次仍失败：{last_error}"
-    ) from last_error
+    raise EmailError(f"连续尝试 {DELIVERY_ATTEMPTS} 次仍失败：{last_error}",
+                     stage=last_error.stage, code=last_error.code) from None
 
 
 def _base_message(config: EmailConfig, subject: str) -> EmailMessage:
@@ -127,6 +142,7 @@ def _base_message(config: EmailConfig, subject: str) -> EmailMessage:
     message["From"] = config.from_address
     message["To"] = ", ".join(config.to_addresses)
     message["Date"] = formatdate(localtime=True)
+    message["Message-ID"] = make_msgid()
     return message
 
 
@@ -161,12 +177,12 @@ def send_notices(
             "</li>"
         )
 
-    plain_lines.append("本邮件由本地“招生公告监控”程序自动发送。")
+    plain_lines.append("本邮件由“招生公告监控”程序自动发送。")
     html_body = (
         f"<h2>{html.escape(website_name)}发现 {count} 条新公告</h2>"
         f"<ul>{''.join(html_items)}</ul>"
         "<p>点击标题可直接打开学校官网公告。</p>"
-        "<p style=\"color:#666\">本邮件由本地“招生公告监控”程序自动发送。</p>"
+        "<p style=\"color:#666\">本邮件由“招生公告监控”程序自动发送。</p>"
     )
 
     message.set_content("\n".join(plain_lines))
@@ -174,17 +190,21 @@ def send_notices(
     _deliver(config, message)
 
 
-def send_test_email(config: EmailConfig) -> None:
+def send_test_email(config: EmailConfig, website_name: str | None = None) -> None:
     subject = f"{config.subject_prefix} 邮件配置测试"
     message = _base_message(config, subject)
-    message.set_content(
-        "邮件配置测试成功。\n\n"
-        "今后检测到中央财经大学硕士招生新公告时，程序会发送类似邮件。"
-    )
+    target = website_name or "招生公告"
+    message.set_content(f"邮件配置测试成功。\n\n分发目标：{target}。\n本次测试不修改公告历史。")
     message.add_alternative(
         "<h2>邮件配置测试成功</h2>"
-        "<p>今后检测到中央财经大学硕士招生新公告时，"
-        "程序会发送类似邮件。</p>",
+        f"<p>分发目标：{html.escape(target)}。</p><p>本次测试不修改公告历史。</p>",
         subtype="html",
     )
+    _deliver(config, message)
+
+
+def send_health_email(config: EmailConfig, issues: list[str]) -> None:
+    subject = f"{config.subject_prefix} VPS 监控{'异常' if issues else '恢复'}"
+    message = _base_message(config, subject)
+    message.set_content("招生公告监控健康状态：\n" + ("\n".join(issues) if issues else "之前报告的异常已恢复。"))
     _deliver(config, message)

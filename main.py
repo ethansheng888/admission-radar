@@ -1,198 +1,128 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from dataclasses import replace
 from pathlib import Path
 
-from admission_radar.config import (
-    ConfigError,
-    load_config,
-    resolve_website_recipients,
-)
-from admission_radar.database import RadarDatabase
-from admission_radar.fetcher import FetchError, build_session, fetch_notices
+from admission_radar.config import ConfigError, load_config, resolve_website_recipients
+from admission_radar.database import local_now
+from admission_radar.fetcher import build_session, fetch_notices
 from admission_radar.logging_setup import configure_logging
-from admission_radar.mailer import EmailError, send_notices, send_test_email
-
+from admission_radar.mailer import check_email_connection, send_test_email
+from admission_radar.monitor import scan
+from admission_radar.state import atomic_json, preflight, summary
 
 PROJECT_DIR = Path(__file__).resolve().parent
 
 
 def configure_console_encoding() -> None:
-    # Windows 任务计划程序经常把输出连接到传统代码页。显式使用 UTF-8，
-    # 可让重定向输出和自动化工具正确显示中文；文件日志本身始终是 UTF-8。
     for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
+        if hasattr(stream, 'reconfigure'):
             try:
-                reconfigure(encoding="utf-8", errors="replace")
+                stream.reconfigure(encoding='utf-8', errors='replace')
             except (LookupError, OSError):
                 pass
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="监控招生公告列表页，发现新公告后发送邮件。"
-    )
-    parser.add_argument(
-        "--config",
-        default=str(PROJECT_DIR / "config.json"),
-        help="配置文件路径（默认：项目目录下的 config.json）",
-    )
-    parser.add_argument(
-        "--test-email",
-        action="store_true",
-        help="只发送一封测试邮件，不抓取网页、不修改数据库",
-    )
-    parser.add_argument(
-        "--test-email-website",
-        help="测试指定网站的分发收件人，例如 bjtu-master",
-    )
-    return parser.parse_args()
+    p = argparse.ArgumentParser(description='监控招生公告；只读预览和状态不需要邮件凭证。')
+    p.add_argument('--config', default=str(PROJECT_DIR / 'config.json'))
+    modes = p.add_mutually_exclusive_group()
+    modes.add_argument('--test-email', action='store_true')
+    modes.add_argument('--preview', action='store_true', help='仅抓取解析，不写库/日志/状态，不发信')
+    modes.add_argument('--status', action='store_true', help='仅查询历史状态，不发信')
+    modes.add_argument('--preflight', action='store_true', help='校验已有历史库，不发信')
+    modes.add_argument('--check-config', action='store_true', help='校验凭证与分组，仅显示数量')
+    modes.add_argument('--smtp-check', action='store_true', help='仅连接认证，不提交邮件')
+    p.add_argument('--test-email-website')
+    args = p.parse_args()
+    if args.test_email_website and not args.test_email:
+        p.error('--test-email-website 必须与 --test-email 一起使用。')
+    return args
 
 
 def run() -> int:
     configure_console_encoding()
     args = parse_args()
     try:
-        config = load_config(args.config)
+        config = load_config(args.config, network_only=args.preview or args.status or args.preflight)
+        if args.preview:
+            with build_session(config.request, config.websites) as session:
+                report = {}
+                for website in config.websites:
+                    notices = fetch_notices(session, website, config.request)
+                    report[website.id] = [dict(title=n.title, url=n.url, published_date=n.published_date) for n in notices]
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if args.status:
+            report = {'websites': summary(config.database_path)}
+            if config.status_path and config.status_path.exists():
+                report['last_run'] = json.loads(config.status_path.read_text(encoding='utf-8'))
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if args.preflight:
+            preflight(config.database_path, tuple(w.id for w in config.websites))
+            print('历史数据库检查通过。')
+            return 0
+        if args.check_config:
+            groups = {w.id: len(resolve_website_recipients(w, config.email.to_addresses)) for w in config.websites}
+            print(json.dumps(dict(email_enabled=config.email.enabled, recipient_counts=groups), ensure_ascii=False))
+            return 0
+        if args.smtp_check:
+            if not config.email.enabled:
+                raise ConfigError('邮件未启用。')
+            check_email_connection(config.email)
+            print('SMTP 连接认证成功；没有提交邮件。')
+            return 0
+        if args.test_email:
+            if not config.email.enabled:
+                raise ConfigError('邮件未启用。')
+            website = next((w for w in config.websites if w.id == args.test_email_website), None)
+            if args.test_email_website and website is None:
+                raise ConfigError('测试网站不存在。')
+            addresses = resolve_website_recipients(website, config.email.to_addresses) if website else config.email.to_addresses
+            for address in addresses:
+                send_test_email(replace(config.email, to_addresses=(address,)), website.name if website else None)
+            print(f'SMTP 接受 {len(addresses)} 封分发测试邮件，请收件人确认收件箱和垃圾箱。')
+            return 0
     except ConfigError as exc:
-        print(f"配置错误：{exc}", file=sys.stderr)
+        print(f'配置错误：{exc}', file=sys.stderr)
         return 2
+    except Exception as exc:
+        print(f'检查失败，类型={type(exc).__name__}', file=sys.stderr)
+        return 1
 
     logger = configure_logging(config.log_path)
-    logger.info("招生公告监控启动")
-
-    if args.test_email:
-        if not config.email.enabled:
-            logger.error("邮件未启用；请先把 config.json 中 email.enabled 改为 true。")
-            return 2
-        test_email_config = config.email
-        if args.test_email_website:
-            target_website = next(
-                (
-                    website
-                    for website in config.websites
-                    if website.id == args.test_email_website
-                ),
-                None,
-            )
-            if target_website is None:
-                logger.error(
-                    "找不到测试网站：%s",
-                    args.test_email_website,
-                )
-                return 2
-            try:
-                test_recipients = resolve_website_recipients(
-                    target_website,
-                    config.email.to_addresses,
-                )
-            except ConfigError as exc:
-                logger.error("收件人配置错误：%s", exc)
-                return 2
-            test_email_config = replace(
-                config.email,
-                to_addresses=test_recipients,
-            )
+    logger.info('招生公告监控启动')
+    previous = {}
+    if config.status_path and config.status_path.exists():
         try:
-            send_test_email(test_email_config)
-        except EmailError as exc:
-            logger.error("测试邮件发送失败：%s", exc)
-            return 1
-        logger.info("测试邮件发送成功，请检查收件箱和垃圾邮件文件夹。")
-        return 0
-
-    recipients_by_website: dict[str, tuple[str, ...]] = {}
-    if config.email.enabled:
-        try:
-            recipients_by_website = {
-                website.id: resolve_website_recipients(
-                    website,
-                    config.email.to_addresses,
-                )
-                for website in config.websites
-            }
-        except ConfigError as exc:
-            logger.error("收件人配置错误：%s", exc)
-            return 2
-
-    had_error = False
-    session = build_session(config.request)
+            previous = json.loads(config.status_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            pass
+    report = dict(started_at=local_now(), ended_at=None, exit_code=None)
+    if config.status_path:
+        atomic_json(config.status_path, report)
     try:
-        with RadarDatabase(config.database_path) as database:
-            database.initialize()
-
-            for website in config.websites:
-                database.upsert_website(website)
-                database.mark_check_started(website.id)
-                logger.info("开始检查：%s <%s>", website.name, website.url)
-
-                try:
-                    notices = fetch_notices(session, website, config.request)
-                    logger.info("成功提取 %d 条公告。", len(notices))
-                    result = database.store_scan(website.id, notices)
-                except (FetchError, OSError, ValueError) as exc:
-                    had_error = True
-                    database.mark_check_failed(website.id, str(exc))
-                    logger.error("检查失败：%s；%s", website.name, exc)
-                    continue
-                except Exception as exc:  # 保留完整日志，单个网站失败不影响其他网站。
-                    had_error = True
-                    database.mark_check_failed(website.id, str(exc))
-                    logger.exception("检查时发生未预期错误：%s", website.name)
-                    continue
-
-                if result.is_baseline:
-                    logger.info(
-                        "首次运行：已为“%s”建立 %d 条公告基线，本次不发邮件。",
-                        website.name,
-                        len(result.inserted),
-                    )
-                    continue
-
-                if result.inserted:
-                    logger.info(
-                        "发现 %d 条数据库中未见过的公告。",
-                        len(result.inserted),
-                    )
-                    for notice in result.inserted:
-                        logger.info("新增公告：%s | %s", notice.title, notice.url)
-                else:
-                    logger.info("暂无新公告：%s", website.name)
-
-                # 邮件失败时不标记已通知，下次运行会自动重试。
-                pending = database.get_pending_notices(website.id)
-                if not pending:
-                    continue
-                if not config.email.enabled:
-                    logger.warning(
-                        "有 %d 条公告待通知，但邮件功能尚未启用。",
-                        len(pending),
-                    )
-                    continue
-
-                try:
-                    website_email = replace(
-                        config.email,
-                        to_addresses=recipients_by_website[website.id],
-                    )
-                    send_notices(website_email, website.name, pending)
-                    database.mark_notified([notice.id for notice in pending])
-                    logger.info("已发送邮件，包含 %d 条新公告。", len(pending))
-                except EmailError as exc:
-                    had_error = True
-                    logger.error(
-                        "邮件发送失败，将在下次运行时重试：%s",
-                        exc,
-                    )
-    finally:
-        session.close()
-
-    logger.info("招生公告监控结束%s", "（存在错误）" if had_error else "")
-    return 1 if had_error else 0
+        code, details = scan(config, logger)
+        report['scan'] = details
+        report['websites'] = summary(config.database_path)
+    except ConfigError as exc:
+        logger.error('配置错误：%s', exc)
+        code = 2
+    except Exception as exc:
+        logger.error('执行失败，类型=%s', type(exc).__name__)
+        report['error_type'] = type(exc).__name__
+        code = 1
+    report.update(ended_at=local_now(), exit_code=code,
+                  consecutive_failures=previous.get('consecutive_failures', 0) + 1 if code else 0)
+    if config.status_path:
+        atomic_json(config.status_path, report)
+    logger.info('招生公告监控结束；退出码=%d', code)
+    return code
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(run())

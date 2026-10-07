@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import ssl
 from collections.abc import Callable
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -8,6 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import certifi
 
 from .config import RequestConfig, WebsiteConfig
 from .models import Notice
@@ -179,7 +181,29 @@ PARSERS: dict[str, Parser] = {
 }
 
 
-def build_session(config: RequestConfig) -> requests.Session:
+class ScopedTLSAdapter(HTTPAdapter):
+    def __init__(self, context: ssl.SSLContext, **kwargs):
+        self.context = context
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["ssl_context"] = self.context
+        return super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, proxy, **kwargs):
+        kwargs["ssl_context"] = self.context
+        return super().proxy_manager_for(proxy, **kwargs)
+
+    def build_connection_pool_key_attributes(self, request, verify, cert=None):
+        if verify is False:
+            raise FetchError("央财 TLS 兼容不允许关闭证书校验。")
+        host, options = super().build_connection_pool_key_attributes(request, verify, cert)
+        options["ssl_context"] = self.context
+        options["cert_reqs"] = "CERT_REQUIRED"
+        return host, options
+
+
+def build_session(config: RequestConfig, websites: tuple[WebsiteConfig, ...] = ()) -> requests.Session:
     retry = Retry(
         total=config.retries,
         connect=config.retries,
@@ -201,6 +225,20 @@ def build_session(config: RequestConfig) -> requests.Session:
     )
     session.mount("https://", adapter)
     session.mount("http://", adapter)
+    for website in websites:
+        if not website.allow_legacy_server_connect:
+            continue
+        parts = urlsplit(website.url)
+        if parts.scheme != "https" or parts.hostname != "gs.cufe.edu.cn" or parts.port not in (None, 443) or website.tls_intermediate_path is None:
+            raise FetchError("旧 TLS 兼容仅允许央财 HTTPS 主机及已验证的中间证书。")
+        context = ssl.create_default_context(cafile=certifi.where())
+        context.load_verify_locations(cafile=str(website.tls_intermediate_path))
+        # OpenSSL SSL_OP_LEGACY_SERVER_CONNECT = SSL_OP_BIT(2).
+        # Python 3.10 does not expose the name; never enable unsafe renegotiation.
+        context.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
+        context.options |= ssl.OP_NO_RENEGOTIATION
+        session.mount("https://gs.cufe.edu.cn/", ScopedTLSAdapter(context, max_retries=retry))
+        session.mount("https://gs.cufe.edu.cn:443/", ScopedTLSAdapter(context, max_retries=retry))
     return session
 
 
@@ -220,7 +258,10 @@ def fetch_notices(
         response = session.get(
             website.url,
             timeout=request_config.timeout_seconds,
+            allow_redirects=False,
         )
+        if 300 <= response.status_code < 400:
+            raise FetchError("公告页发生重定向，需要人工核查目标地址。")
         response.raise_for_status()
     except requests.RequestException as exc:
         raise FetchError(f"访问公告页失败：{exc}") from exc

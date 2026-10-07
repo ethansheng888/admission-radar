@@ -54,6 +54,8 @@ class WebsiteConfig:
     url: str
     parser: str
     recipient_env: str = ""
+    allow_legacy_server_connect: bool = False
+    tls_intermediate_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,19 @@ class AppConfig:
     request: RequestConfig
     email: EmailConfig
     websites: tuple[WebsiteConfig, ...]
+    status_path: Path | None = None
+    require_existing_database: bool = False
+    track_recipient_deliveries: bool = False
+
+
+def validate_recipients(addresses: tuple[str, ...]) -> tuple[str, ...]:
+    result: list[str] = []
+    for address in addresses:
+        if not re.fullmatch(r"[^\s@,;<>]+@[^\s@,;<>]+", address):
+            raise ConfigError("收件人必须是完整邮箱地址；不要使用显示名称或换行。")
+        if address.casefold() not in {x.casefold() for x in result}:
+            result.append(address)
+    return tuple(result)
 
 
 def resolve_website_recipients(
@@ -73,7 +88,7 @@ def resolve_website_recipients(
     """按网站解析收件人；未指定时使用全局默认收件人。"""
 
     if not website.recipient_env:
-        return default_recipients
+        return validate_recipients(default_recipients)
 
     raw_value = os.environ.get(website.recipient_env, "")
     recipients = tuple(
@@ -86,7 +101,7 @@ def resolve_website_recipients(
             f"网站“{website.name}”需要收件人环境变量"
             f"“{website.recipient_env}”，但当前未设置。"
         )
-    return recipients
+    return validate_recipients(recipients)
 
 
 def _expect_object(value: Any, field: str) -> dict[str, Any]:
@@ -156,7 +171,7 @@ def _validate_email(email: EmailConfig) -> None:
         raise ConfigError("邮件已启用，但缺少：" + "、".join(missing))
 
 
-def load_config(path: str | Path) -> AppConfig:
+def load_config(path: str | Path, *, network_only: bool = False) -> AppConfig:
     config_path = Path(path).expanduser().resolve()
     if not config_path.exists():
         raise ConfigError(
@@ -174,6 +189,9 @@ def load_config(path: str | Path) -> AppConfig:
     except OSError as exc:
         raise ConfigError(f"无法读取配置文件：{exc}") from exc
 
+    # Preview/status/preflight do not need SMTP credentials or recipient values.
+    if network_only and isinstance(raw, dict):
+        raw = {**raw, "email": {"enabled": False}}
     root = _expect_object(
         _resolve_environment_placeholders(raw),
         "根配置",
@@ -229,6 +247,8 @@ def load_config(path: str | Path) -> AppConfig:
     )
     if not 1 <= email.smtp_port <= 65535:
         raise ConfigError("email.smtp_port 必须在 1 到 65535 之间。")
+    if email.timeout_seconds <= 0:
+        raise ConfigError("email.timeout_seconds 必须大于 0。")
     _validate_email(email)
 
     websites_raw = root.get("websites")
@@ -248,6 +268,11 @@ def load_config(path: str | Path) -> AppConfig:
             recipient_env=str(
                 website_raw.get("recipient_env", "")
             ).strip(),
+            allow_legacy_server_connect=website_raw.get("allow_legacy_server_connect", False),
+            tls_intermediate_path=(
+                _resolve_local_path(base_dir, website_raw["tls_intermediate_path"], f"{context}.tls_intermediate_path")
+                if website_raw.get("tls_intermediate_path") else None
+            ),
         )
         if website.id in seen_ids:
             raise ConfigError(f"网站 id 重复：{website.id}")
@@ -256,6 +281,13 @@ def load_config(path: str | Path) -> AppConfig:
         parsed_url = urlparse(website.url)
         if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
             raise ConfigError(f"{context}.url 必须是完整的 http/https 地址。")
+        if not isinstance(website.allow_legacy_server_connect, bool):
+            raise ConfigError(f"{context}.allow_legacy_server_connect 必须是布尔值。")
+        if website.allow_legacy_server_connect:
+            if parsed_url.scheme != "https" or parsed_url.hostname != "gs.cufe.edu.cn" or parsed_url.port not in (None, 443):
+                raise ConfigError("旧 TLS 兼容仅允许 gs.cufe.edu.cn 的 HTTPS 443 请求。")
+            if website.tls_intermediate_path is None:
+                raise ConfigError("央财旧 TLS 兼容需要已验证的中间证书路径。")
         websites.append(website)
 
     return AppConfig(
@@ -271,4 +303,10 @@ def load_config(path: str | Path) -> AppConfig:
         request=request,
         email=email,
         websites=tuple(websites),
+        status_path=(
+            _resolve_local_path(base_dir, root["status_path"], "status_path")
+            if root.get("status_path") else None
+        ),
+        require_existing_database=bool(root.get("require_existing_database", False)),
+        track_recipient_deliveries=bool(root.get("track_recipient_deliveries", False)),
     )

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Admission Radar backup
+
+[Timer]
+OnCalendar=*-*-* 03:35:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=admission-radar-backup.service
+
+[Install]
+WantedBy=timers.target

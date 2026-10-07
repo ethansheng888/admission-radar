@@ -32,6 +32,8 @@ class RadarDatabase:
         self.connection.close()
 
     def initialize(self) -> None:
+        if self.connection.execute("PRAGMA user_version").fetchone()[0] > 1:
+            raise ValueError("数据库版本比当前代码新，拒绝降级写入。")
         with self.connection:
             self.connection.executescript(
                 """
@@ -64,6 +66,19 @@ class RadarDatabase:
 
                 CREATE INDEX IF NOT EXISTS idx_notices_pending
                     ON notices (website_id, notified_at, is_baseline);
+
+                CREATE TABLE IF NOT EXISTS notice_deliveries (
+                    notice_id INTEGER NOT NULL REFERENCES notices(id) ON DELETE CASCADE,
+                    recipient TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending','uncertain','accepted')),
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_at TEXT,
+                    accepted_at TEXT,
+                    error_code TEXT,
+                    PRIMARY KEY(notice_id, recipient)
+                );
+                PRAGMA user_version = 1;
                 """
             )
 
@@ -233,4 +248,69 @@ class RadarDatabase:
                 WHERE id IN ({placeholders})
                 """,
                 (local_now(), *notice_ids),
+            )
+
+    def ensure_deliveries(self, website_id: str, recipients: tuple[str, ...]) -> None:
+        """Freeze targets only once for pending notices; never backfill successes."""
+        if not recipients:
+            raise ValueError("待通知收件组不能为空。")
+        with self.connection:
+            rows = self.connection.execute(
+                """SELECT id FROM notices n WHERE website_id=? AND is_baseline=0
+                   AND notified_at IS NULL AND NOT EXISTS
+                   (SELECT 1 FROM notice_deliveries d WHERE d.notice_id=n.id)""",
+                (website_id,),
+            ).fetchall()
+            self.connection.executemany(
+                "INSERT INTO notice_deliveries(notice_id,recipient) VALUES (?,?)",
+                [(r["id"], address) for r in rows for address in recipients],
+            )
+
+    def pending_delivery_groups(self, website_id: str) -> dict[str, list[StoredNotice]]:
+        rows = self.connection.execute(
+            """SELECT n.id,n.website_id,n.title,n.url,n.published_date,d.recipient
+               FROM notices n JOIN notice_deliveries d ON d.notice_id=n.id
+               WHERE n.website_id=? AND n.is_baseline=0 AND n.notified_at IS NULL
+                 AND d.status!='accepted' ORDER BY n.first_seen_at,n.id,d.recipient""",
+            (website_id,),
+        ).fetchall()
+        groups: dict[str, list[StoredNotice]] = {}
+        for row in rows:
+            groups.setdefault(row["recipient"], []).append(StoredNotice(
+                id=row["id"], website_id=row["website_id"], title=row["title"],
+                url=row["url"], published_date=row["published_date"],
+            ))
+        return groups
+
+    def start_delivery(self, recipient: str, ids: list[int]) -> None:
+        # A crash after SMTP acceptance must remain visible as uncertain.
+        with self.connection:
+            self.connection.executemany(
+                """UPDATE notice_deliveries SET status='uncertain',attempts=attempts+1,
+                   last_attempt_at=?,error_code=NULL WHERE notice_id=? AND recipient=?
+                   AND status!='accepted'""",
+                [(local_now(), nid, recipient) for nid in ids],
+            )
+
+    def fail_delivery(self, recipient: str, ids: list[int], error_code: str, *, uncertain: bool) -> None:
+        with self.connection:
+            self.connection.executemany(
+                """UPDATE notice_deliveries SET status=?,error_code=?
+                   WHERE notice_id=? AND recipient=? AND status!='accepted'""",
+                [("uncertain" if uncertain else "pending", error_code, nid, recipient) for nid in ids],
+            )
+
+    def accept_delivery(self, recipient: str, ids: list[int]) -> None:
+        now = local_now()
+        with self.connection:
+            self.connection.executemany(
+                """UPDATE notice_deliveries SET status='accepted',accepted_at=?,error_code=NULL
+                   WHERE notice_id=? AND recipient=?""", [(now, nid, recipient) for nid in ids],
+            )
+            self.connection.executemany(
+                """UPDATE notices SET notified_at=? WHERE id=? AND notified_at IS NULL
+                   AND EXISTS(SELECT 1 FROM notice_deliveries WHERE notice_id=notices.id)
+                   AND NOT EXISTS(SELECT 1 FROM notice_deliveries
+                                  WHERE notice_id=notices.id AND status!='accepted')""",
+                [(now, nid) for nid in ids],
             )

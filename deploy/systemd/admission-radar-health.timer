@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly Admission Radar health check
+
+[Timer]
+OnCalendar=*-*-* *:40:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=admission-radar-health.service
+
+[Install]
+WantedBy=timers.target

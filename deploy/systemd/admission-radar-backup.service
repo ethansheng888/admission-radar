@@ -1,0 +1,21 @@
+[Unit]
+Description=Admission Radar consistent SQLite backup
+
+[Service]
+Type=oneshot
+User=admission-radar
+Group=admission-radar
+WorkingDirectory=/opt/admission-radar/current
+Environment=TZ=Asia/Shanghai
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=/usr/bin/test -f /etc/admission-radar/cutover.ready
+ExecStart=/opt/admission-radar/current/.venv/bin/python /opt/admission-radar/current/scripts/backup_state.py --config /etc/admission-radar/config.json --destination /var/backups/admission-radar --keep 14
+TimeoutStartSec=2min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/admission-radar /var/backups/admission-radar
+Nice=19
+CPUWeight=10
