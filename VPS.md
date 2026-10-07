@@ -68,6 +68,10 @@ Public GitHub `config.cloud.json` defaults to legacy group tracking and never
 populates the private recipient table. It retains the existing partial-refusal
 duplication limitation. The VPS database contains email addresses and must not
 be pushed to the public repository.
+The current owner choice is only the sender's Gmail: the GitHub CUFE profile
+uses SMTP_USERNAME as its recipient; BJTU still uses BJTU_RECIPIENT. The VPS
+uses its privately configured CUFE_RECIPIENTS and BJTU_RECIPIENT. Verify the
+backup's sender and friend Secrets before any manual takeover.
 
 ## Cutover
 
