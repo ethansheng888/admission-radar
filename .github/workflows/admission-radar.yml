@@ -143,6 +143,21 @@ jobs:
         if: ${{ steps.hourly_gate.outputs.should_run == 'true' && steps.sender.outputs.should_send == 'false' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
         run: python main.py --config config.cloud.json --preview
 
+      - name: Keep standby workflow active
+        if: ${{ always() && steps.hourly_gate.outputs.should_run == 'true' && steps.sender.outputs.should_send == 'false' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
+        shell: bash
+        run: |
+          python scripts/update_heartbeat.py state/heartbeat.txt --max-age-days 30
+          git add state/heartbeat.txt
+          if git diff --cached --quiet; then
+            echo "Standby heartbeat is current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: keep standby admission radar active"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
       - name: Read previous notice state
         id: before
         if: ${{ steps.hourly_gate.outputs.should_run == 'true' && steps.sender.outputs.should_send == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}

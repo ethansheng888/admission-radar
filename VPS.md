@@ -123,7 +123,10 @@ sudo systemctl start admission-radar.timer
 sudo systemctl start admission-radar.service  # formal scan, may send mail
 ```
 
-The GitHub workflow remains enabled. Both formal sender profiles read the shared
+The GitHub workflow remains enabled. Standby runs keep the existing 30-day
+heartbeat so prolonged standby does not leave the public repository inactive.
+This writes only `state/heartbeat.txt`, never formal notice/delivery state.
+Both formal sender profiles read the shared
 `main/config.sender.json` through the GitHub Contents API before scanning and
 again before each SMTP recipient batch. `--sender-check` reads no mail secrets or
 database: exit 0 means this sender is selected, 3 means standby, and any error
