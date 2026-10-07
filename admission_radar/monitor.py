@@ -6,9 +6,11 @@ from .database import RadarDatabase
 from .fetcher import build_session, fetch_notices
 from .mailer import EmailError, send_notices
 from .state import preflight
+from .sender import require_sender
 
 
 def scan(config: AppConfig, logger) -> tuple[int, dict]:
+    require_sender(config)
     recipients = {w.id: resolve_website_recipients(w, config.email.to_addresses)
                   for w in config.websites} if config.email.enabled else {}
     if config.require_existing_database:
@@ -42,6 +44,7 @@ def scan(config: AppConfig, logger) -> tuple[int, dict]:
                     # Public GitHub state must not acquire private email addresses.
                     pending = database.get_pending_notices(website.id)
                     if pending:
+                        require_sender(config)
                         try:
                             send_notices(replace(config.email, to_addresses=recipients[website.id]), website.name, pending)
                             database.mark_notified([n.id for n in pending])
@@ -53,6 +56,7 @@ def scan(config: AppConfig, logger) -> tuple[int, dict]:
                     continue
                 database.ensure_deliveries(website.id, recipients[website.id])
                 for recipient, pending in database.pending_delivery_groups(website.id).items():
+                    require_sender(config)
                     ids = [n.id for n in pending]
                     database.start_delivery(recipient, ids)
                     try:

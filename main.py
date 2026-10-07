@@ -13,6 +13,7 @@ from admission_radar.logging_setup import configure_logging
 from admission_radar.mailer import check_email_connection, send_test_email
 from admission_radar.monitor import scan
 from admission_radar.state import atomic_json, preflight, summary
+from admission_radar.sender import InactiveSender, require_sender, sender_status
 
 PROJECT_DIR = Path(__file__).resolve().parent
 
@@ -36,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     modes.add_argument('--preflight', action='store_true', help='校验已有历史库，不发信')
     modes.add_argument('--check-config', action='store_true', help='校验凭证与分组，仅显示数量')
     modes.add_argument('--smtp-check', action='store_true', help='仅连接认证，不提交邮件')
+    modes.add_argument('--sender-check', action='store_true', help='只读共享发送端开关：0=本端主用，3=备用')
     p.add_argument('--test-email-website')
     args = p.parse_args()
     if args.test_email_website and not args.test_email:
@@ -47,7 +49,11 @@ def run() -> int:
     configure_console_encoding()
     args = parse_args()
     try:
-        config = load_config(args.config, network_only=args.preview or args.status or args.preflight)
+        config = load_config(args.config, network_only=args.preview or args.status or args.preflight or args.sender_check)
+        if args.sender_check:
+            report = sender_status(config)
+            print(json.dumps(report, ensure_ascii=False))
+            return 0 if report['may_send'] else 3
         if args.preview:
             with build_session(config.request, config.websites) as session:
                 report = {}
@@ -86,6 +92,11 @@ def run() -> int:
             for address in addresses:
                 send_test_email(replace(config.email, to_addresses=(address,)), website.name if website else None)
             print(f'SMTP 接受 {len(addresses)} 封分发测试邮件，请收件人确认收件箱和垃圾箱。')
+            return 0
+        try:
+            require_sender(config)
+        except InactiveSender:
+            print('本端为备用；不进行正式扫描、状态写入或招生通知发送。')
             return 0
     except ConfigError as exc:
         print(f'配置错误：{exc}', file=sys.stderr)

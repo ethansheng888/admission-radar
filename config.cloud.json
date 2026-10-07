@@ -37,5 +37,8 @@
       "parser": "bjtu_master",
       "recipient_env": "BJTU_RECIPIENT"
     }
-  ]
+  ],
+  "sender_id": "github",
+  "sender_policy_url": "https://api.github.com/repos/ethansheng888/admission-radar/contents/config.sender.json?ref=main",
+  "require_existing_database": true
 }

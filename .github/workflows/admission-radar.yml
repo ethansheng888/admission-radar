@@ -119,9 +119,33 @@ jobs:
         if: ${{ steps.hourly_gate.outputs.should_run == 'true' }}
         run: python -m unittest discover -s tests -v
 
+      - name: Check shared sender switch
+        id: sender
+        if: ${{ steps.hourly_gate.outputs.should_run == 'true' }}
+        env:
+          ADMISSION_RADAR_POLICY_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if python main.py --config config.cloud.json --sender-check; then
+            echo "should_send=true" >> "$GITHUB_OUTPUT"
+          else
+            result=$?
+            if [ "$result" -eq 3 ]; then
+              echo "should_send=false" >> "$GITHUB_OUTPUT"
+              echo "GitHub is standby; no formal notification or state update."
+            else
+              echo "Shared sender switch unavailable; refusing formal notifications."
+              exit "$result"
+            fi
+          fi
+
+      - name: Standby read-only preview
+        if: ${{ steps.hourly_gate.outputs.should_run == 'true' && steps.sender.outputs.should_send == 'false' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
+        run: python main.py --config config.cloud.json --preview
+
       - name: Read previous notice state
         id: before
-        if: ${{ steps.hourly_gate.outputs.should_run == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
+        if: ${{ steps.hourly_gate.outputs.should_run == 'true' && steps.sender.outputs.should_send == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
         shell: bash
         run: |
           echo "count=$(python scripts/count_notices.py state/radar.db)" >> "$GITHUB_OUTPUT"
@@ -150,8 +174,9 @@ jobs:
 
       - name: Check announcements
         id: check_announcements
-        if: ${{ steps.hourly_gate.outputs.should_run == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
+        if: ${{ steps.hourly_gate.outputs.should_run == 'true' && steps.sender.outputs.should_send == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) }}
         env:
+          ADMISSION_RADAR_POLICY_TOKEN: ${{ github.token }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           CUFE_RECIPIENTS: ${{ secrets.CUFE_RECIPIENTS }}
@@ -159,7 +184,7 @@ jobs:
         run: python main.py --config config.cloud.json
 
       - name: Record successful check
-        if: ${{ steps.hourly_gate.outputs.should_run == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) && steps.check_announcements.outcome == 'success' }}
+        if: ${{ steps.hourly_gate.outputs.should_run == 'true' && steps.sender.outputs.should_send == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) && steps.check_announcements.outcome == 'success' }}
         env:
           HOUR_KEY: ${{ steps.hourly_gate.outputs.hour_key }}
           RUN_HISTORY: state/run_history.jsonl
@@ -196,7 +221,7 @@ jobs:
           PY
 
       - name: Persist state when needed
-        if: ${{ always() && steps.hourly_gate.outputs.should_run == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) && steps.before.outcome == 'success' }}
+        if: ${{ always() && steps.hourly_gate.outputs.should_run == 'true' && steps.sender.outputs.should_send == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.test_email) && steps.before.outcome == 'success' }}
         shell: bash
         env:
           BEFORE_COUNT: ${{ steps.before.outputs.count }}

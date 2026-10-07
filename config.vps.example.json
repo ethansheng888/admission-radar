@@ -42,5 +42,7 @@
   ],
   "status_path": "/var/lib/admission-radar/status.json",
   "require_existing_database": true,
-  "track_recipient_deliveries": true
+  "track_recipient_deliveries": true,
+  "sender_id": "vps",
+  "sender_policy_url": "https://api.github.com/repos/ethansheng888/admission-radar/contents/config.sender.json?ref=main"
 }

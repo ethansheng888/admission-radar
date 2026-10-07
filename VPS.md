@@ -3,7 +3,8 @@
 Run a fixed release under `/opt/admission-radar/current` with an independent venv.
 Use `config.vps.example.json`, absolute state paths and a dedicated unprivileged
 `admission-radar` user. The systemd templates are in `deploy/systemd/`; they must
-remain disabled until mail validation and the old sender shutdown are complete.
+remain disabled until mail validation and the old sender is confirmed in standby.
+Keep the GitHub workflow enabled as a manual backup; do not run two formal senders.
 
 ## Credentials
 
@@ -73,16 +74,20 @@ be pushed to the public repository.
 1. Build/test the fixed release and validate preview before changing old tasks.
 2. Privately supply credentials; check configuration, authenticate, then send
    explicitly authorized test messages to both school groups. Confirm inboxes.
-3. Pause the old cron-job.org dispatch task, disable ONLY the Admission Radar
-   workflow, and pause any Windows sender. Wait for running and queued jobs and
-   confirm final state persistence. Disabling a workflow is not proof that all
-   old executions have ended.
-4. Fetch the stopped default branch's latest SQLite. Record commit, SHA-256,
+3. Publish the tested sender-switch code and workflow, keeping GitHub enabled.
+   `config.sender.json` initially selects `github`, preserving current monitoring.
+   Confirm both sender profiles read the shared policy. Then commit
+   `active_sender: vps` to main, wait for all running/queued old sender jobs to
+   finish and confirm final persistence. Observe an actual GitHub standby run:
+   its read-only preview succeeds and formal state/mail steps are skipped.
+   cron-job.org can continue dispatching the enabled standby workflow. Pause any
+   other independent sender. Do not start VPS just because a policy commit exists.
+4. Fetch the quiescent default branch's latest SQLite. Record commit, SHA-256,
    integrity/FK checks and school counts. Compare all legacy rows before and
    after schema migration. Preserve IDs, baseline and notification timestamps.
 5. Install the database with service ownership and 0600 mode, create a private
    consistent pre-cutover backup, and record the cutover evidence privately.
-6. Only after the old sender is quiescent create the root-controlled
+6. Only after the old sender is in standby and quiescent create the root-controlled
    `/etc/admission-radar/cutover.ready` file. It is a deliberate startup gate,
    not a substitute for checking old execution state.
 7. Start one formal service cycle, verify notification state, then enable the
@@ -118,10 +123,40 @@ sudo systemctl start admission-radar.timer
 sudo systemctl start admission-radar.service  # formal scan, may send mail
 ```
 
+The GitHub workflow remains enabled. Both formal sender profiles read the shared
+`main/config.sender.json` through the GitHub Contents API before scanning and
+again before each SMTP recipient batch. `--sender-check` reads no mail secrets or
+database: exit 0 means this sender is selected, 3 means standby, and any error
+refuses sending. Public VPS reads require no GitHub credential. GitHub runners
+use their existing ephemeral token. Do not put a token in the policy file.
+Missing/invalid policy and API/network failure refuse formal sending; this adds
+GitHub API availability as a dependency. The switch is a MANUAL control, not a
+lease or automatic failover. An explicit `--test-email` remains a separately
+authorized diagnostic and never records formal delivery progress.
+
 For updates stop project timers, wait for active project jobs, back up current
 state, and switch to a tested compatible release. Keep the latest database;
 restoring an old DB can lose delivery progress. To return to GitHub first stop
-the VPS sender, resolve uncertain/partial deliveries, and provide compatible
-latest state through an authorized private workflow. Never upload the private
-recipient table or re-enable old GitHub state blindly. An old group-only sender
-cannot retain partial per-recipient progress: handle this before restoring it.
+all VPS project timers and wait for active jobs, resolve uncertain/partial
+deliveries, and export current compatible state using:
+
+```sh
+sudo -u admission-radar /opt/admission-radar/current/.venv/bin/python /opt/admission-radar/current/scripts/export_github_state.py /var/lib/admission-radar/radar.db /var/lib/admission-radar/github-state-YYYYMMDD-HHMM.db
+```
+
+The export includes only legacy website/notice tables and preserves IDs, baseline,
+notification timestamps, pending and the SQLite sequence. It excludes the private
+recipient table and refuses partial, uncertain or inconsistent delivery state.
+Publish that verified snapshot to GitHub through an authorized path, verify
+GitHub's recipient Secrets match the current groups, and ONLY THEN select
+`active_sender: github`. Keep VPS stopped until the reverse handoff completes.
+Never restore stale GitHub state blindly. Whole-host loss needs an existing
+off-host snapshot; local backups cannot provide that. Keep compatible snapshots
+in existing personal storage, and record their recovery point. No off-host
+upload is configured by this release.
+
+During handoff, wait for in-flight jobs to finish before changing an active
+sender's state or enabling the other sender. For an unreachable VPS, establish
+that it cannot continue sending before GitHub takes over. Reading a shared
+switch is not an atomic lock with SMTP; manual handoff and uncertain SMTP outcomes
+remain the boundaries where duplicates can occur.

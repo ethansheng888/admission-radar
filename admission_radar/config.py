@@ -69,6 +69,8 @@ class AppConfig:
     status_path: Path | None = None
     require_existing_database: bool = False
     track_recipient_deliveries: bool = False
+    sender_id: str = ""
+    sender_policy_url: str = ""
 
 
 def validate_recipients(addresses: tuple[str, ...]) -> tuple[str, ...]:
@@ -198,6 +200,17 @@ def load_config(path: str | Path, *, network_only: bool = False) -> AppConfig:
     )
     base_dir = config_path.parent
 
+    sender_id = str(root.get("sender_id", "")).strip()
+    sender_policy_url = str(root.get("sender_policy_url", "")).strip()
+    if sender_id or sender_policy_url:
+        if sender_id not in {"github", "vps"} or not sender_policy_url:
+            raise ConfigError("sender_id 和 sender_policy_url 必须同时配置，发送端为 github 或 vps。")
+        from .sender import validate_policy_url
+        try:
+            validate_policy_url(sender_policy_url)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from None
+
     request_raw = _expect_object(root.get("request", {}), "request")
     request = RequestConfig(
         timeout_seconds=int(request_raw.get("timeout_seconds", 20)),
@@ -309,4 +322,6 @@ def load_config(path: str | Path, *, network_only: bool = False) -> AppConfig:
         ),
         require_existing_database=bool(root.get("require_existing_database", False)),
         track_recipient_deliveries=bool(root.get("track_recipient_deliveries", False)),
+        sender_id=sender_id,
+        sender_policy_url=sender_policy_url,
     )
