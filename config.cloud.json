@@ -35,7 +35,8 @@
       "name": "北京交通大学硕士招生",
       "url": "https://yzb.bjtu.edu.cn/sszs/index.htm",
       "parser": "bjtu_master",
-      "recipient_env": "BJTU_RECIPIENT"
+      "recipient_env": "BJTU_RECIPIENT",
+      "tls_intermediate_path": "certificates/bjtu-intermediate.pem"
     }
   ],
   "sender_id": "github",
