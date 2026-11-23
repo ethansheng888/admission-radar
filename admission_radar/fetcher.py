@@ -197,7 +197,7 @@ class ScopedTLSAdapter(HTTPAdapter):
 
     def build_connection_pool_key_attributes(self, request, verify, cert=None):
         if verify is False:
-            raise FetchError("央财 TLS 兼容不允许关闭证书校验。")
+            raise FetchError("站点 TLS 配置不允许关闭证书校验。")
         host, options = super().build_connection_pool_key_attributes(request, verify, cert)
         options["ssl_context"] = self.context
         options["cert_reqs"] = "CERT_REQUIRED"
@@ -227,19 +227,29 @@ def build_session(config: RequestConfig, websites: tuple[WebsiteConfig, ...] = (
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     for website in websites:
-        if not website.allow_legacy_server_connect:
+        if not website.allow_legacy_server_connect and website.tls_intermediate_path is None:
             continue
         parts = urlsplit(website.url)
-        if parts.scheme != "https" or parts.hostname != "gs.cufe.edu.cn" or parts.port not in (None, 443) or website.tls_intermediate_path is None:
+        if website.allow_legacy_server_connect and parts.hostname != "gs.cufe.edu.cn":
             raise FetchError("旧 TLS 兼容仅允许央财 HTTPS 主机及已验证的中间证书。")
+        if (
+            parts.scheme != "https"
+            or parts.hostname not in {"gs.cufe.edu.cn", "yzb.bjtu.edu.cn"}
+            or parts.port not in (None, 443)
+            or website.tls_intermediate_path is None
+        ):
+            raise FetchError("站点 TLS 配置仅允许已配置中间证书的中财或北交 HTTPS 443 主机。")
         context = ssl.create_default_context(cafile=certifi.where())
         context.load_verify_locations(cafile=str(website.tls_intermediate_path))
-        # OpenSSL SSL_OP_LEGACY_SERVER_CONNECT = SSL_OP_BIT(2).
-        # Python 3.10 does not expose the name; never enable unsafe renegotiation.
-        context.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
-        context.options |= ssl.OP_NO_RENEGOTIATION
-        session.mount("https://gs.cufe.edu.cn/", ScopedTLSAdapter(context, max_retries=retry))
-        session.mount("https://gs.cufe.edu.cn:443/", ScopedTLSAdapter(context, max_retries=retry))
+        # The supplied intermediate must still chain to a trusted root.
+        context.verify_flags &= ~getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0)
+        if website.allow_legacy_server_connect:
+            # Python 3.10 does not expose SSL_OP_LEGACY_SERVER_CONNECT.
+            context.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
+            context.options |= ssl.OP_NO_RENEGOTIATION
+        scoped_adapter = ScopedTLSAdapter(context, max_retries=retry)
+        session.mount(f"https://{parts.hostname}/", scoped_adapter)
+        session.mount(f"https://{parts.hostname}:443/", scoped_adapter)
     return session
 
 
