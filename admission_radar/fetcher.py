@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import ssl
 from collections.abc import Callable
@@ -247,29 +248,62 @@ def fetch_notices(
     website: WebsiteConfig,
     request_config: RequestConfig,
 ) -> list[Notice]:
-    parser = PARSERS.get(website.parser)
-    if parser is None:
-        available = "、".join(sorted(PARSERS))
-        raise FetchError(
-            f"未知解析器“{website.parser}”；当前可用解析器：{available}"
-        )
-
+    stage = "select_parser"
+    response = None
     try:
-        response = session.get(
-            website.url,
-            timeout=request_config.timeout_seconds,
-            allow_redirects=False,
-        )
+        parser = PARSERS.get(website.parser)
+        if parser is None:
+            available = "、".join(sorted(PARSERS))
+            raise FetchError(
+                f"未知解析器“{website.parser}”；当前可用解析器：{available}"
+            )
+
+        stage = "http_request"
+        try:
+            response = session.get(
+                website.url,
+                timeout=request_config.timeout_seconds,
+                allow_redirects=False,
+            )
+        except requests.RequestException as exc:
+            raise FetchError("访问公告页失败。") from exc
+
+        stage = "validate_response"
         if 300 <= response.status_code < 400:
             raise FetchError("公告页发生重定向，需要人工核查目标地址。")
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        raise FetchError(f"访问公告页失败：{exc}") from exc
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            raise FetchError("公告页返回 HTTP 错误。") from exc
 
-    content_type = response.headers.get("Content-Type", "")
-    if "html" not in content_type.lower() and not response.content.lstrip().startswith(
-        b"<!DOCTYPE"
-    ):
-        raise FetchError(f"公告页返回的不是 HTML：{content_type or '未知类型'}")
+        content_type = response.headers.get("Content-Type", "")
+        if "html" not in content_type.lower() and not response.content.lstrip().startswith(
+            b"<!DOCTYPE"
+        ):
+            raise FetchError("公告页返回的不是 HTML。")
 
-    return parser(response.content, website.url)
+        stage = "parse_announcements"
+        return parser(response.content, website.url)
+    except Exception as exc:
+        # Log only exception class names and numeric status codes. Exception
+        # messages can contain request details or be supplied by a remote peer.
+        chain = []
+        verify_code = None
+        error = exc
+        for _ in range(8):
+            if error is None:
+                break
+            chain.append(type(error).__name__)
+            if isinstance(error, ssl.SSLCertVerificationError):
+                verify_code = getattr(error, "verify_code", None)
+            error = error.__cause__ or error.__context__
+
+        logging.getLogger(__name__).error(
+            "site=%s stage=%s error=%s http_status=%s tls_verify_code=%s",
+            website.id,
+            stage,
+            " > ".join(chain),
+            response.status_code if response is not None else None,
+            verify_code,
+        )
+        raise
